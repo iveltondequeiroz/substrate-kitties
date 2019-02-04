@@ -19,9 +19,12 @@ decl_event!(
     pub enum Event<T>
     where
         <T as system::Trait>::AccountId,
-        <T as system::Trait>::Hash
+        <T as system::Trait>::Hash,
+        <T as balances::Trait>::Balance
     {
         Created(AccountId, Hash),
+        PriceSet(AccountId, Hash, Balance),
+        Transferred(AccountId, AccountId, Hash),
     }
 );
 
@@ -34,8 +37,9 @@ decl_storage! {
         AllKittiesCount get(all_kitties_count): u64;
         AllKittiesIndex: map T::Hash => u64;
 
-
-        OwnedKitty get(kitty_of_owner): map T::AccountId => T::Hash;
+        OwnedKittiesArray get(kitty_of_owner_by_index): map (T::AccountId, u64) => T::Hash;
+        OwnedKittiesCount get(owned_kitty_count): map T::AccountId => u64;
+        OwnedKittiesIndex: map T::Hash => u64;
 
         Nonce: u64;
     }
@@ -48,16 +52,9 @@ decl_module! {
 
         fn create_kitty(origin) -> Result {
             let sender = ensure_signed(origin)?;
-
-            let all_kitties_count = Self::all_kitties_count();
-
-            let new_all_kitties_count = all_kitties_count.checked_add(1).ok_or("Overflow adding a new kitty to total supply")?;
-
             let nonce = <Nonce<T>>::get();
             let random_hash = (<system::Module<T>>::random_seed(), &sender, nonce)
                 .using_encoded(<T as system::Trait>::Hashing::hash);
-
-            ensure!(!<KittyOwner<T>>::exists(random_hash), "Kitty already exists");
 
             let new_kitty = Kitty {
                 id: random_hash,
@@ -66,21 +63,112 @@ decl_module! {
                 gen: 0,
             };
 
-            <Kitties<T>>::insert(random_hash, new_kitty);
-            <KittyOwner<T>>::insert(random_hash, &sender);
-
-            <AllKittiesArray<T>>::insert(all_kitties_count, random_hash);
-            <AllKittiesCount<T>>::put(new_all_kitties_count);
-            <AllKittiesIndex<T>>::insert(random_hash, all_kitties_count);
-
-
-            <OwnedKitty<T>>::insert(&sender, random_hash);
+            Self::_mint(sender, random_hash, new_kitty)?;
 
             <Nonce<T>>::mutate(|n| *n += 1);
 
-            Self::deposit_event(RawEvent::Created(sender, random_hash));
+            Ok(())
+        }
+
+        fn set_price(origin, kitty_id: T::Hash, new_price: T::Balance) -> Result {
+            let sender = ensure_signed(origin)?;
+
+            ensure!(<Kitties<T>>::exists(kitty_id), "This cat does not exist");
+
+            let owner = Self::owner_of(kitty_id).ok_or("No owner for this kitty")?;
+            ensure!(owner == sender, "You do not own this cat");
+
+            let mut kitty = Self::kitty(kitty_id);
+            kitty.price = new_price;
+
+            <Kitties<T>>::insert(kitty_id, kitty);
+
+            Self::deposit_event(RawEvent::PriceSet(sender, kitty_id, new_price));
 
             Ok(())
         }
+
+        fn transfer(origin, to: T::AccountId, kitty_id: T::Hash) -> Result {
+            let sender = ensure_signed(origin)?;
+
+            let owner = Self::owner_of(kitty_id).ok_or("No owner for this kitty")?;
+            ensure!(owner == sender, "You do not own this kitty");
+
+            Self::_transfer_from(sender, to, kitty_id)?;
+
+            Ok(())
+        }
+    }
+}
+
+impl<T: Trait> Module<T> {
+    fn _mint(to: T::AccountId, kitty_id: T::Hash, new_kitty: Kitty<T::Hash, T::Balance>) -> Result {
+        ensure!(!<KittyOwner<T>>::exists(kitty_id), "Kitty already exists");
+
+        let owned_kitty_count = Self::owned_kitty_count(&to);
+
+        let new_owned_kitty_count = owned_kitty_count
+            .checked_add(1)
+            .ok_or("Overflow adding a new kitty to account balance")?;
+
+        let all_kitties_count = Self::all_kitties_count();
+
+        let new_all_kitties_count = all_kitties_count
+            .checked_add(1)
+            .ok_or("Overflow adding a new kitty to total supply")?;
+
+        <Kitties<T>>::insert(kitty_id, new_kitty);
+        <KittyOwner<T>>::insert(kitty_id, &to);
+
+        <AllKittiesArray<T>>::insert(all_kitties_count, kitty_id);
+        <AllKittiesCount<T>>::put(new_all_kitties_count);
+        <AllKittiesIndex<T>>::insert(kitty_id, all_kitties_count);
+
+        <OwnedKittiesArray<T>>::insert((to.clone(), owned_kitty_count), kitty_id);
+        <OwnedKittiesCount<T>>::insert(&to, new_owned_kitty_count);
+        <OwnedKittiesIndex<T>>::insert(kitty_id, owned_kitty_count);
+
+        Self::deposit_event(RawEvent::Created(to, kitty_id));
+
+        Ok(())
+    }
+
+    fn _transfer_from(from: T::AccountId, to: T::AccountId, kitty_id: T::Hash) -> Result {
+        let owner = Self::owner_of(kitty_id).ok_or("No owner for this kitty")?;
+
+        ensure!(owner == from, "'from' account does not own this kitty");
+
+        let owned_kitty_count_from = Self::owned_kitty_count(&from);
+        let owned_kitty_count_to = Self::owned_kitty_count(&to);
+
+        let new_owned_kitty_count_to = owned_kitty_count_to
+            .checked_add(1)
+            .ok_or("Transfer causes overflow of 'to' kitty balance")?;
+
+        let new_owned_kitty_count_from = owned_kitty_count_from
+            .checked_sub(1)
+            .ok_or("Transfer causes underflow of 'from' kitty balance")?;
+
+        // "Swap and pop"
+        let kitty_index = <OwnedKittiesIndex<T>>::get(kitty_id);
+        if kitty_index != new_owned_kitty_count_from {
+            let last_kitty_id =
+                <OwnedKittiesArray<T>>::get((from.clone(), new_owned_kitty_count_from));
+            <OwnedKittiesArray<T>>::insert((from.clone(), kitty_index), last_kitty_id);
+            <OwnedKittiesIndex<T>>::insert(last_kitty_id, kitty_index);
+        }
+
+        <KittyOwner<T>>::insert(&kitty_id, &to);
+        <OwnedKittiesIndex<T>>::insert(kitty_id, owned_kitty_count_to);
+
+        <OwnedKittiesArray<T>>::remove((from.clone(), new_owned_kitty_count_from));
+        <OwnedKittiesArray<T>>::insert((to.clone(), owned_kitty_count_to), kitty_id);
+
+        <OwnedKittiesCount<T>>::insert(&from, new_owned_kitty_count_from);
+        <OwnedKittiesCount<T>>::insert(&to, new_owned_kitty_count_to);
+
+        Self::deposit_event(RawEvent::Transferred(from, to, kitty_id));
+
+        Ok(())
     }
 }
