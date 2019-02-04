@@ -1,7 +1,8 @@
 use parity_codec::Encode;
-use runtime_primitives::traits::{As, Hash};
 use srml_support::{dispatch::Result, StorageMap, StorageValue};
 use system::ensure_signed;
+// ACTION: Import the Zero trait
+use runtime_primitives::traits::{As, Hash};
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
 pub struct Kitty<Hash, Balance> {
@@ -25,6 +26,7 @@ decl_event!(
         Created(AccountId, Hash),
         PriceSet(AccountId, Hash, Balance),
         Transferred(AccountId, AccountId, Hash),
+        // ACTION: Create a `Bought` event here
     }
 );
 
@@ -95,6 +97,36 @@ decl_module! {
             ensure!(owner == sender, "You do not own this kitty");
 
             Self::_transfer_from(sender, to, kitty_id)?;
+
+            Ok(())
+        }
+
+        fn buy_kitty(origin, kitty_id: T::Hash, max_price: T::Balance) -> Result {
+            let sender = ensure_signed(origin)?;
+
+            // ACTION: Check the kitty `exists()`
+
+            // ACTION: Get the `owner` of the kitty if it exists, otherwise return an `Err()`
+            // ACTION: Check that the `sender` is not the `owner`
+
+            let mut kitty = Self::kitty(kitty_id);
+
+            // ACTION: Get the `kitty_price` and check that it is not zero
+            //      HINT:  `runtime_primitives::traits::Zero` allows you to call `kitty_price.is_zero()` which returns a bool
+
+            // ACTION: Check `kitty_price` is less than or equal to max_price
+
+            // ACTION: Use the `Balances` module's `make_transfer()` function to safely transfer funds
+
+            // ACTION: Transfer the kitty
+
+            // ACTION: Reset kitty price back to zero, and update the storage
+
+            // ACTION: Create an event for the cat being bought with relevant details
+            //      - new owner
+            //      - old owner
+            //      - the kitty id
+            //      - the price sold for
 
             Ok(())
         }
